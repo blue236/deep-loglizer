@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 import os
@@ -7,6 +7,7 @@ from sklearn.ensemble import IsolationForest
 from sklearn.model_selection import train_test_split, StratifiedShuffleSplit
 import joblib
 import argparse
+import pydlt
 
 # Function to parse DLT files and extract log messages
 def parse_dlt_files(folder_path):
@@ -14,14 +15,18 @@ def parse_dlt_files(folder_path):
     for file_name in os.listdir(folder_path):
         if file_name.endswith(".dlt"):
             file_path = os.path.join(folder_path, file_name)
-            with open(file_path, "r") as file:
-                for line in file:
-                    log_data.append(line.strip())  # Example: append each line as a log entry
+            print(f"Start to read {file_path}.")
+            try:
+                with pydlt.DltFileReader(file_path) as msg_file:
+                    for message in msg_file:
+                        log_data.append(str(message))
+            except Exception as e:
+                print(f"Error reading {file_name}: {e}")
     return log_data
 
 # Preprocess logs into numerical data
 def preprocess_logs(logs):
-    max_length = 100  # Maximum length of log vectors
+    max_length = 255  # Maximum length of log vectors
     processed_logs = []
     for log in logs:
         encoded = [ord(char) for char in log[:max_length]]  # Simple character encoding

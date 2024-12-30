@@ -272,7 +272,7 @@ class ForcastBasedModel(nn.Module):
 
     def load_model(self, model_save_file=""):
         logging.info("Loading model from {}".format(self.model_save_file))
-        self.load_state_dict(torch.load(model_save_file, map_location=self.device))
+        self.load_state_dict(torch.load(model_save_file, map_location=self.device, weights_only=True))
 
     def fit(self, train_loader, test_loader=None, epoches=10, learning_rate=1.0e-3):
         self.to(self.device)
