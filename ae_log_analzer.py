@@ -13,7 +13,7 @@ import pydlt
 def parse_dlt_files(folder_path):
     log_data = []
     for file_name in os.listdir(folder_path):
-        if file_name.endswith(".dlt"):
+        if file_name.endswith(".dlt") or file_name.endswith(".DLT"):
             file_path = os.path.join(folder_path, file_name)
             print(f"Start to read {file_path}.")
             try:
@@ -67,7 +67,11 @@ if __name__ == "__main__":
     # Step 2: Preprocess logs
     print("Preprocessing logs...")
     log_data = preprocess_logs(raw_logs)
-    print(f"Processed {len(log_data)} logs.")
+    if len(log_data) > 0:
+        print(f"Processed {len(log_data)} logs.")
+    else:
+        print(f"No dlt log found. Please check {args.folder}")
+        exit()
 
     # Step 3: Train or update the Isolation Forest model
     model = train_or_update_model(log_data, args.output_model)
