@@ -35,11 +35,17 @@ def preprocess_logs(logs):
         processed_logs.append(encoded)
     return np.array(processed_logs)
 
-# Train an Isolation Forest model
-def train_isolation_forest(data):
-    print("Training Isolation Forest...")
-    model = IsolationForest(contamination=0.1, random_state=42)
-    model.fit(data)
+# Train or update an Isolation Forest model
+def train_or_update_model(data, model_path):
+    if os.path.exists(model_path):
+        print(f"Loading existing model from {model_path}...")
+        model = joblib.load(model_path)
+        print("Updating the existing model with new data...")
+        model.fit(data)
+    else:
+        print("Training a new Isolation Forest model...")
+        model = IsolationForest(contamination=0.1, random_state=42)
+        model.fit(data)
     return model
 
 # Save the model to a file
@@ -49,7 +55,7 @@ def save_model(model, output_path):
     print("Model saved successfully.")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train an Isolation Forest on DLT log files.")
+    parser = argparse.ArgumentParser(description="Train or update an Isolation Forest on DLT log files.")
     parser.add_argument("--folder", required=True, help="Path to the folder containing DLT files.")
     parser.add_argument("--output_model", default="isolation_forest_model.pkl", help="Path to save the trained model.")
     args = parser.parse_args()
@@ -63,13 +69,8 @@ if __name__ == "__main__":
     log_data = preprocess_logs(raw_logs)
     print(f"Processed {len(log_data)} logs.")
 
-    # Step 3: Split data into training and validation sets
-    sss = StratifiedShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
-    for train_index, val_index in sss.split(log_data, np.zeros(len(log_data))):
-        x_train, x_val = log_data[train_index], log_data[val_index]
+    # Step 3: Train or update the Isolation Forest model
+    model = train_or_update_model(log_data, args.output_model)
 
-    # Step 4: Train the Isolation Forest model
-    model = train_isolation_forest(x_train)
-
-    # Step 5: Save the trained model
+    # Step 4: Save the trained or updated model
     save_model(model, args.output_model)
