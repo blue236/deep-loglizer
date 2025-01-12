@@ -4,7 +4,6 @@
 import os
 import numpy as np
 from sklearn.ensemble import IsolationForest
-from sklearn.model_selection import train_test_split
 import joblib
 import argparse
 import pydlt
@@ -36,12 +35,14 @@ def preprocess_logs(logs):
     return np.array(processed_logs)
 
 # Train or update a MiniBatch Isolation Forest model
+# Increment n_estimators when warm_start is True to avoid warnings
 def train_or_update_model(data, model_path):
     if os.path.exists(model_path):
         print(f"Loading existing model from {model_path}...")
         model = joblib.load(model_path)
         print("Updating the existing model with new data...")
-        model.fit(data)  # Incrementally fit batches of data
+        model.set_params(n_estimators=model.n_estimators + 10)  # Increment trees to fit new data
+        model.fit(data)
     else:
         print("Training a new MiniBatch Isolation Forest model...")
         model = IsolationForest(n_estimators=100, warm_start=True, random_state=42, max_samples='auto', contamination=0.1)
@@ -60,22 +61,19 @@ if __name__ == "__main__":
     parser.add_argument("--output_model", default="minibatch_isolation_forest_model.pkl", help="Path to save the trained model.")
     args = parser.parse_args()
 
-    # Step 1: Read DLT files
+    # Step 1: Read and preprocess DLT files
     print("Parsing DLT files...")
     raw_logs = parse_dlt_files(args.folder)
+    if not raw_logs:
+        print("No logs found in the specified folder. Exiting.")
+        exit(1)
 
-    # Step 2: Preprocess logs
     print("Preprocessing logs...")
     log_data = preprocess_logs(raw_logs)
-    if len(log_data) > 0:
-        print(f"Processed {len(log_data)} logs.")
-    else:
-        print(f"No dlt log found. Please check {args.folder}")
-        exit()
     print(f"Processed {len(log_data)} logs.")
 
-    # Step 3: Train or update the MiniBatch Isolation Forest model
+    # Step 2: Train or update the MiniBatch Isolation Forest model
     model = train_or_update_model(log_data, args.output_model)
 
-    # Step 4: Save the trained or updated model
+    # Step 3: Save the trained or updated model
     save_model(model, args.output_model)
