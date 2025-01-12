@@ -4,7 +4,7 @@
 import os
 import numpy as np
 from sklearn.ensemble import IsolationForest
-from sklearn.model_selection import train_test_split, StratifiedShuffleSplit
+from sklearn.model_selection import train_test_split
 import joblib
 import argparse
 import pydlt
@@ -35,16 +35,16 @@ def preprocess_logs(logs):
         processed_logs.append(encoded)
     return np.array(processed_logs)
 
-# Train or update an Isolation Forest model
+# Train or update a MiniBatch Isolation Forest model
 def train_or_update_model(data, model_path):
     if os.path.exists(model_path):
         print(f"Loading existing model from {model_path}...")
         model = joblib.load(model_path)
         print("Updating the existing model with new data...")
-        model.fit(data)
+        model.fit(data)  # Incrementally fit batches of data
     else:
-        print("Training a new Isolation Forest model...")
-        model = IsolationForest(contamination=0.1, random_state=42)
+        print("Training a new MiniBatch Isolation Forest model...")
+        model = IsolationForest(n_estimators=100, warm_start=True, random_state=42, max_samples='auto', contamination=0.1)
         model.fit(data)
     return model
 
@@ -55,9 +55,9 @@ def save_model(model, output_path):
     print("Model saved successfully.")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train or update an Isolation Forest on DLT log files.")
+    parser = argparse.ArgumentParser(description="Train or update a MiniBatch Isolation Forest on DLT log files.")
     parser.add_argument("--folder", required=True, help="Path to the folder containing DLT files.")
-    parser.add_argument("--output_model", default="isolation_forest_model.pkl", help="Path to save the trained model.")
+    parser.add_argument("--output_model", default="minibatch_isolation_forest_model.pkl", help="Path to save the trained model.")
     args = parser.parse_args()
 
     # Step 1: Read DLT files
@@ -72,8 +72,9 @@ if __name__ == "__main__":
     else:
         print(f"No dlt log found. Please check {args.folder}")
         exit()
+    print(f"Processed {len(log_data)} logs.")
 
-    # Step 3: Train or update the Isolation Forest model
+    # Step 3: Train or update the MiniBatch Isolation Forest model
     model = train_or_update_model(log_data, args.output_model)
 
     # Step 4: Save the trained or updated model
