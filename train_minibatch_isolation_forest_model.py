@@ -10,6 +10,11 @@ import pydlt
 
 # Function to recursively find DLT files in a folder
 def find_dlt_files(folder_path):
+    if not os.path.exists(folder_path):
+        raise FileNotFoundError(f"The folder path '{folder_path}' does not exist.")
+    if not os.path.isdir(folder_path):
+        raise NotADirectoryError(f"The path '{folder_path}' is not a directory.")
+
     file_list = []
     for root, _, files in os.walk(folder_path):
         for file in files:
@@ -26,7 +31,10 @@ def parse_dlt_file(file_path):
             for message in msg_file:
                 log_data.append(str(message))
     except Exception as e:
-        print(f"Error reading {file_path}: {e}")
+        error_message = f"Error reading {file_path}: {e}"
+        with open("error_log.txt", "a") as error_file:
+            error_file.write(error_message + "\n")
+        print(error_message)
     return log_data
 
 # Preprocess logs into numerical data
@@ -34,7 +42,7 @@ def preprocess_logs(logs):
     max_length = 255  # Maximum length of log vectors
     processed_logs = []
     for log in logs:
-        encoded = [ord(char) for char in log[:max_length]]  # Simple character encoding
+        encoded = [int.from_bytes(char.encode('utf-8'), 'little') for char in log[:max_length]]  # UTF-8 encoding
         if len(encoded) < max_length:
             encoded += [0] * (max_length - len(encoded))  # Pad to max length
         processed_logs.append(encoded)
@@ -46,7 +54,11 @@ def train_or_update_model(data, model_path):
         print(f"Loading existing model from {model_path}...")
         model = joblib.load(model_path)
         print("Updating the existing model with new data...")
-        model.set_params(n_estimators=model.n_estimators + 10)  # Increment trees to fit new data
+        max_estimators = 500  # Define a reasonable upper limit for n_estimators
+        if model.n_estimators + 10 > max_estimators:
+            print(f"Warning: n_estimators limit reached ({max_estimators}). No additional trees will be added.")
+        else:
+            model.set_params(n_estimators=model.n_estimators + 10)  # Increment trees to fit new data
         model.fit(data)
     else:
         print("Training a new MiniBatch Isolation Forest model...")
@@ -68,27 +80,32 @@ if __name__ == "__main__":
 
     # Step 1: Find all DLT files
     print(f"Searching for DLT files in {args.folder}...")
-    dlt_files = find_dlt_files(args.folder)
+    try:
+        dlt_files = find_dlt_files(args.folder)
+    except (FileNotFoundError, NotADirectoryError) as e:
+        print(e)
+        exit(1)
+
     if not dlt_files:
-        print("No DLT files found. Exiting.")
+        print(f"No DLT files found in the folder '{args.folder}'. Please check if the folder contains valid '.dlt' files or if the path is correct.")
         exit(1)
 
-    # Step 2: Parse and preprocess logs
-    all_logs = []
+    # Step 2: Process each DLT file individually
     for dlt_file in dlt_files:
+        # Parse the DLT file
         logs = parse_dlt_file(dlt_file)
-        all_logs.extend(logs)
 
-    if not all_logs:
-        print("No logs extracted from DLT files. Exiting.")
-        exit(1)
+        if not logs:
+            print(f"No logs extracted from {dlt_file}. Skipping.")
+            continue
 
-    print("Preprocessing logs...")
-    log_data = preprocess_logs(all_logs)
-    print(f"Processed {len(log_data)} logs.")
+        # Preprocess logs
+        print("Preprocessing logs...")
+        log_data = preprocess_logs(logs)
+        print(f"Processed {len(log_data)} logs from {dlt_file}.")
 
-    # Step 3: Train or update the MiniBatch Isolation Forest model
-    model = train_or_update_model(log_data, args.output_model)
+        # Train or update the MiniBatch Isolation Forest model
+        model = train_or_update_model(log_data, args.output_model)
 
-    # Step 4: Save the trained or updated model
-    save_model(model, args.output_model)
+        # Save the trained or updated model
+        save_model(model, args.output_model)
