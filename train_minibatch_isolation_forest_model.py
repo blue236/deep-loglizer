@@ -7,6 +7,7 @@ from sklearn.ensemble import IsolationForest
 import joblib
 import argparse
 import pydlt
+import hashlib
 
 # Function to recursively find DLT files in a folder
 def find_dlt_files(folder_path):
@@ -37,16 +38,26 @@ def parse_dlt_file(file_path):
         print(error_message)
     return log_data
 
-# Preprocess logs into numerical data
-def preprocess_logs(logs):
+# Hashing-based log preprocessing
+def hash_log(log, max_length=255):
+    hashed = hashlib.md5(log.encode('utf-8')).digest()[:max_length]
+    return [int(byte) for byte in hashed]
+
+# Batch-based preprocessing
+def preprocess_logs(logs, batch_size=1000, use_optimization=False):
     max_length = 255  # Maximum length of log vectors
-    processed_logs = []
-    for log in logs:
-        encoded = [int.from_bytes(char.encode('utf-8'), 'little') for char in log[:max_length]]  # UTF-8 encoding
-        if len(encoded) < max_length:
-            encoded += [0] * (max_length - len(encoded))  # Pad to max length
-        processed_logs.append(encoded)
-    return np.array(processed_logs)
+    for i in range(0, len(logs), batch_size):
+        batch_logs = logs[i:i + batch_size]
+        if use_optimization:
+            processed_logs = [hash_log(log, max_length=max_length) for log in batch_logs]
+        else:
+            processed_logs = []
+            for log in batch_logs:
+                encoded = [int.from_bytes(char.encode('utf-8'), 'little') for char in log[:max_length]]  # UTF-8 encoding
+                if len(encoded) < max_length:
+                    encoded += [0] * (max_length - len(encoded))  # Pad to max length
+                processed_logs.append(encoded)
+        yield np.array(processed_logs)
 
 # Train or update a MiniBatch Isolation Forest model
 def train_or_update_model(data, model_path):
@@ -76,6 +87,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train or update a MiniBatch Isolation Forest using DLT files.")
     parser.add_argument("--folder", required=True, help="Path to the folder containing DLT files.")
     parser.add_argument("--output_model", default="minibatch_isolation_forest_model.pkl", help="Path to save the trained model.")
+    parser.add_argument("--use-optimization", action="store_true", help="Enable optimized preprocessing using hashing.")
     args = parser.parse_args()
 
     # Step 1: Find all DLT files
@@ -99,13 +111,11 @@ if __name__ == "__main__":
             print(f"No logs extracted from {dlt_file}. Skipping.")
             continue
 
-        # Preprocess logs
-        print("Preprocessing logs...")
-        log_data = preprocess_logs(logs)
-        print(f"Processed {len(log_data)} logs from {dlt_file}.")
+        # Preprocess logs in batches
+        print(f"Preprocessing logs from {dlt_file}...")
+        for log_batch in preprocess_logs(logs, use_optimization=args.use_optimization):
+            # Train or update the MiniBatch Isolation Forest model
+            model = train_or_update_model(log_batch, args.output_model)
 
-        # Train or update the MiniBatch Isolation Forest model
-        model = train_or_update_model(log_data, args.output_model)
-
-        # Save the trained or updated model
-        save_model(model, args.output_model)
+            # Save the trained or updated model
+            save_model(model, args.output_model)
