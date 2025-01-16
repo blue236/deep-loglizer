@@ -9,7 +9,9 @@ import argparse
 import pydlt
 import hashlib
 from multiprocessing import Pool, cpu_count
-import tensorflow as tf
+import torch
+import torch.nn as nn
+import torch.optim as optim
 
 # Function to recursively find DLT files in a folder
 def find_dlt_files(folder_path):
@@ -40,110 +42,124 @@ def parse_single_dlt_file(file_path):
         print(error_message)
     return log_data
 
+def safe_parse(file):
+    try:
+        return parse_single_dlt_file(file)
+    except Exception as e:
+        error_message = f"Error parsing {file}: {e}"
+        with open("error_log.txt", "a") as error_file:
+            error_file.write(error_message + "\n")
+        print(error_message)
+        return []
+
 # Multi-core parsing of DLT files
 def parse_dlt_files_in_parallel(file_list):
     num_cores = cpu_count()
     print(f"Using {num_cores} cores for DLT file parsing...")
-    def safe_parse(file):
-        try:
-            return parse_single_dlt_file(file)
-        except Exception as e:
-            error_message = f"Error parsing {file}: {e}"
-            with open("error_log.txt", "a") as error_file:
-                error_file.write(error_message + "\n")
-            print(error_message)
-            return []
-
     with Pool(num_cores) as pool:
         all_logs = pool.map(safe_parse, file_list)
     return [log for logs in all_logs for log in logs]  # Flatten the list of lists
 
-# Hashing-based log preprocessing
-def hash_log(log, max_length=255):
-    hashed = hashlib.md5(log.encode('utf-8')).digest()[:max_length]
-    return [int(byte) for byte in hashed]
+def process_batch(batch_logs):
+    max_length = 255
+    processed_logs = []
+    for log in batch_logs:
+        encoded = [int.from_bytes(char.encode('utf-8'), 'little') for char in log[:max_length]]  # UTF-8 encoding
+        if len(encoded) < max_length:
+            encoded += [0] * (max_length - len(encoded))  # Pad to max length
+        processed_logs.append(encoded)
+    return processed_logs
 
 # Batch-based preprocessing with multi-processing
-# Optimized to process batches directly in the pool map
-def preprocess_logs(logs, batch_size=1000, use_optimization=False):
-    def process_batch(batch_logs):
-        max_length = 255
-        if use_optimization:
-            return [hash_log(log, max_length=max_length) for log in batch_logs]
-        else:
-            processed_logs = []
-            for log in batch_logs:
-                encoded = [int.from_bytes(char.encode('utf-8'), 'little') for char in log[:max_length]]  # UTF-8 encoding
-                if len(encoded) < max_length:
-                    encoded += [0] * (max_length - len(encoded))  # Pad to max length
-                processed_logs.append(encoded)
-            return processed_logs
-
+def preprocess_logs(logs, batch_size=100000):
     num_cores = cpu_count()
     print(f"Using {num_cores} cores for preprocessing...")
     with Pool(num_cores) as pool:
         for processed_logs in pool.imap_unordered(process_batch, [logs[i:i + batch_size] for i in range(0, len(logs), batch_size)]):
             yield np.array(processed_logs)
 
-# TensorFlow-based model for optional training
-def train_model_tensorflow(model, data):
-    print("Training the TensorFlow model...")
-    model.fit(data, data, epochs=10, batch_size=32, verbose=1)
+# PyTorch-based model for optional training
+class AnomalyDetectionModel(nn.Module):
+    def __init__(self, input_size):
+        super(AnomalyDetectionModel, self).__init__()
+        self.encoder = nn.Sequential(
+            nn.Linear(input_size, 128),
+            nn.ReLU(),
+            nn.Linear(128, 64),
+            nn.ReLU()
+        )
+        self.decoder = nn.Sequential(
+            nn.Linear(64, 128),
+            nn.ReLU(),
+            nn.Linear(128, input_size)
+        )
+
+    def forward(self, x):
+        encoded = self.encoder(x)
+        decoded = self.decoder(encoded)
+        return decoded
+
+def train_model_pytorch(model, data_loader, criterion, optimizer, epochs=10):
+    print("Training the PyTorch model...")
+    model.train()
+    for epoch in range(epochs):
+        epoch_loss = 0
+        for batch in data_loader:
+            inputs = batch
+            optimizer.zero_grad()
+            outputs = model(inputs)
+            loss = criterion(outputs, inputs)
+            loss.backward()
+            optimizer.step()
+            epoch_loss += loss.item()
+        print(f"Epoch [{epoch+1}/{epochs}], Loss: {epoch_loss/len(data_loader):.4f}")
     return model
 
 # Sklearn-based Isolation Forest model
 def train_model_sklearn(model, data):
+    print("Configure the Isolation Forest model...")
+    max_estimators = 50000 # Define a reasonable upper limit for n_estimators
+    if model.n_estimators + 10 > max_estimators:
+        print(f"Warning: n_estimators limit reached ({max_estimators}). No additional trees will be added.")
+    else:
+        model.set_params(n_estimators=model.n_estimators + 10) # Increment trees to fit new data
     print("Training or updating the Isolation Forest model...")
     model.fit(data)
     return model
 
 # Save the model to a file
-def save_model(model, output_path):
+def save_model(model, output_path, use_pytorch=False):
     print(f"Saving the model to {output_path}...")
-    if isinstance(model, tf.keras.Model):
-        model.save(output_path)
+    if use_pytorch:
+        torch.save(model.state_dict(), output_path)
     else:
         joblib.dump(model, output_path)
     print("Model saved successfully.")
 
 # Load a model from file or initialize a new one
-def load_model(output_model, use_tensorflow):
+def load_model(output_model, use_pytorch, input_size=None):
     model = None
-    if use_tensorflow:
-        class IsolationForestModel(tf.keras.Model):
-            def __init__(self):
-                super(IsolationForestModel, self).__init__()
-                self.dense1 = tf.keras.layers.Dense(128, activation='relu')
-                self.dense2 = tf.keras.layers.Dense(64, activation='relu')
-                self.output_layer = tf.keras.layers.Dense(1, activation='linear')
-
-            def call(self, inputs):
-                x = self.dense1(inputs)
-                x = self.dense2(x)
-                return self.output_layer(x)
-
+    if use_pytorch:
+        model = AnomalyDetectionModel(input_size)
         if os.path.exists(output_model):
-            print(f"Loading existing TensorFlow model from {output_model}...")
-            model = tf.keras.models.load_model(output_model)
+            print(f"Loading existing PyTorch model from {output_model}...")
+            model.load_state_dict(torch.load(output_model))
         else:
-            print("Initializing a new TensorFlow model...")
-            model = IsolationForestModel()
-        model.compile(optimizer=tf.keras.optimizers.Adam(), loss='mean_squared_error')
+            print("Initializing a new PyTorch model...")
     else:
         if os.path.exists(output_model):
             print(f"Loading existing Isolation Forest model from {output_model}...")
             model = joblib.load(output_model)
         else:
             print("Initializing a new Isolation Forest model...")
-            model = IsolationForest(n_estimators=100, warm_start=True, random_state=42, max_samples='auto', contamination=0.1)
+            model = IsolationForest(n_estimators=100, warm_start=True, random_state=42, max_samples='auto', contamination=0.1, n_jobs=-1, verbose=1)
     return model
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train or update a MiniBatch Isolation Forest or TensorFlow model using DLT files.")
+    parser = argparse.ArgumentParser(description="Train or update a MiniBatch Isolation Forest or PyTorch model using DLT files.")
     parser.add_argument("--folder", required=True, help="Path to the folder containing DLT files.")
     parser.add_argument("--output_model", default="minibatch_isolation_forest_model.pkl", help="Path to save the trained model.")
-    parser.add_argument("--use-optimization", action="store_true", help="Enable optimized preprocessing using hashing.")
-    parser.add_argument("--use-TensorFlow", action="store_true", help="Use TensorFlow-based model for training.")
+    parser.add_argument("--use-PyTorch", action="store_true", help="Use PyTorch-based model for training.")
     args = parser.parse_args()
 
     # Step 1: Find all DLT files
@@ -167,17 +183,21 @@ if __name__ == "__main__":
         exit(1)
 
     # Load or initialize the model
-    model = load_model(args.output_model, args.use_TensorFlow)
+    input_size = len(all_logs[0]) if all_logs else 255  # Assume 255 if logs are empty
+    model = load_model(args.output_model, args.use_PyTorch, input_size=input_size)
 
     # Step 3: Preprocess logs in batches with multi-processing
     print("Preprocessing logs...")
-    total_batches = (len(all_logs) + 999) // 1000
-    for batch_index, log_batch in enumerate(preprocess_logs(all_logs, use_optimization=args.use_optimization), start=1):
+    total_batches = (len(all_logs) + 99999) // 100000
+    for batch_index, log_batch in enumerate(preprocess_logs(all_logs), start=1):
         print(f"Processing batch {batch_index}/{total_batches}...")
-        if args.use_TensorFlow:
-            model = train_model_tensorflow(model, log_batch)
+        if args.use_PyTorch:
+            data_loader = torch.utils.data.DataLoader(torch.tensor(log_batch, dtype=torch.float32), batch_size=32, shuffle=True)
+            criterion = nn.MSELoss()
+            optimizer = optim.Adam(model.parameters(), lr=0.001)
+            model = train_model_pytorch(model, data_loader, criterion, optimizer)
         else:
             model = train_model_sklearn(model, log_batch)
 
     # Save the trained or updated model
-    save_model(model, args.output_model)
+    save_model(model, args.output_model, use_pytorch=args.use_PyTorch)
