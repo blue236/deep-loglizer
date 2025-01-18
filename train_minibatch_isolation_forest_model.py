@@ -7,7 +7,6 @@ from sklearn.ensemble import IsolationForest
 import joblib
 import argparse
 import pydlt
-import hashlib
 from multiprocessing import Pool, cpu_count
 import torch
 import torch.nn as nn
@@ -42,36 +41,36 @@ def parse_single_dlt_file(file_path):
         print(error_message)
     return log_data
 
-def safe_parse(file):
-    try:
-        return parse_single_dlt_file(file)
-    except Exception as e:
-        error_message = f"Error parsing {file}: {e}"
-        with open("error_log.txt", "a") as error_file:
-            error_file.write(error_message + "\n")
-        print(error_message)
-        return []
-
 # Multi-core parsing of DLT files
 def parse_dlt_files_in_parallel(file_list):
+    def safe_parse(file):
+        try:
+            return parse_single_dlt_file(file)
+        except Exception as e:
+            error_message = f"Error parsing {file}: {e}"
+            with open("error_log.txt", "a") as error_file:
+                error_file.write(error_message + "\n")
+            print(error_message)
+            return []
+
     num_cores = cpu_count()
     print(f"Using {num_cores} cores for DLT file parsing...")
     with Pool(num_cores) as pool:
         all_logs = pool.map(safe_parse, file_list)
     return [log for logs in all_logs for log in logs]  # Flatten the list of lists
 
-def process_batch(batch_logs):
-    max_length = 255
-    processed_logs = []
-    for log in batch_logs:
-        encoded = [int.from_bytes(char.encode('utf-8'), 'little') for char in log[:max_length]]  # UTF-8 encoding
-        if len(encoded) < max_length:
-            encoded += [0] * (max_length - len(encoded))  # Pad to max length
-        processed_logs.append(encoded)
-    return processed_logs
-
 # Batch-based preprocessing with multi-processing
 def preprocess_logs(logs, batch_size=100000):
+    def process_batch(batch_logs):
+        max_length = 255
+        processed_logs = []
+        for log in batch_logs:
+            encoded = [int.from_bytes(char.encode('utf-8'), 'little') for char in log[:max_length]]  # UTF-8 encoding
+            if len(encoded) < max_length:
+                encoded += [0] * (max_length - len(encoded))  # Pad to max length
+            processed_logs.append(encoded)
+        return processed_logs
+
     num_cores = cpu_count()
     print(f"Using {num_cores} cores for preprocessing...")
     with Pool(num_cores) as pool:
@@ -117,7 +116,7 @@ def train_model_pytorch(model, data_loader, criterion, optimizer, epochs=10):
 
 # Sklearn-based Isolation Forest model
 def train_model_sklearn(model, data):
-    print("Configure the Isolation Forest model...")
+    print("Configuring the Isolation Forest model...")
     max_estimators = 50000 # Define a reasonable upper limit for n_estimators
     if model.n_estimators + 10 > max_estimators:
         print(f"Warning: n_estimators limit reached ({max_estimators}). No additional trees will be added.")
@@ -154,6 +153,18 @@ def load_model(output_model, use_pytorch, input_size=None):
             print("Initializing a new Isolation Forest model...")
             model = IsolationForest(n_estimators=100, warm_start=True, random_state=42, max_samples='auto', contamination=0.1, n_jobs=-1, verbose=1)
     return model
+
+# Display the model overview
+def display_model_overview(model, use_pytorch):
+    print("\nModel Overview:")
+    if use_pytorch:
+        print("PyTorch Model:")
+        print(model)
+    else:
+        print("Isolation Forest Parameters:")
+        print(f"Number of Trees (n_estimators): {model.n_estimators}")
+        print(f"Max Samples: {model.max_samples}")
+        print(f"Contamination: {model.contamination}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train or update a MiniBatch Isolation Forest or PyTorch model using DLT files.")
@@ -201,3 +212,6 @@ if __name__ == "__main__":
 
     # Save the trained or updated model
     save_model(model, args.output_model, use_pytorch=args.use_PyTorch)
+
+    # Display the model overview
+    display_model_overview(model, args.use_pytorch=args.use_PyTorch)
