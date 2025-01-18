@@ -26,14 +26,19 @@ def find_dlt_files(folder_path):
                 file_list.append(os.path.join(root, file))
     return file_list
 
-# Function to parse a single DLT file and extract log messages
-def parse_single_dlt_file(file_path):
+# Function to parse a single DLT file and extract log messages with filtering
+def parse_single_dlt_file(file_path, filter_keywords=None):
     log_data = []
     print(f"Reading {file_path}...")
     try:
         with pydlt.DltFileReader(file_path) as msg_file:
             for message in msg_file:
-                log_data.append(str(message))
+                log_message = str(message.verbos_payload)
+                if filter_keywords:
+                    if any(keyword in log_message.lower() for keyword in filter_keywords):
+                        log_data.append(log_message)
+                else:
+                    log_data.append(log_message)
     except Exception as e:
         error_message = f"Error reading {file_path}: {e}"
         with open("error_log.txt", "a") as error_file:
@@ -41,36 +46,37 @@ def parse_single_dlt_file(file_path):
         print(error_message)
     return log_data
 
-# Multi-core parsing of DLT files
-def parse_dlt_files_in_parallel(file_list):
-    def safe_parse(file):
-        try:
-            return parse_single_dlt_file(file)
-        except Exception as e:
-            error_message = f"Error parsing {file}: {e}"
-            with open("error_log.txt", "a") as error_file:
-                error_file.write(error_message + "\n")
-            print(error_message)
-            return []
+# Function to safely parse a file with filtering
+def safe_parse(file, filter_keywords=None):
+    try:
+        return parse_single_dlt_file(file, filter_keywords)
+    except Exception as e:
+        error_message = f"Error parsing {file}: {e}"
+        with open("error_log.txt", "a") as error_file:
+            error_file.write(error_message + "\n")
+        print(error_message)
+        return []
 
+# Multi-core parsing of DLT files with filtering
+def parse_dlt_files_in_parallel(file_list, filter_keywords=None):
     num_cores = cpu_count()
     print(f"Using {num_cores} cores for DLT file parsing...")
     with Pool(num_cores) as pool:
-        all_logs = pool.map(safe_parse, file_list)
+        all_logs = pool.starmap(safe_parse, [(file, filter_keywords) for file in file_list])
     return [log for logs in all_logs for log in logs]  # Flatten the list of lists
 
 # Batch-based preprocessing with multi-processing
-def preprocess_logs(logs, batch_size=100000):
-    def process_batch(batch_logs):
-        max_length = 255
-        processed_logs = []
-        for log in batch_logs:
-            encoded = [int.from_bytes(char.encode('utf-8'), 'little') for char in log[:max_length]]  # UTF-8 encoding
-            if len(encoded) < max_length:
-                encoded += [0] * (max_length - len(encoded))  # Pad to max length
-            processed_logs.append(encoded)
-        return processed_logs
+def process_batch(batch_logs):
+    max_length = 255
+    processed_logs = []
+    for log in batch_logs:
+        encoded = [int.from_bytes(char.encode('utf-8'), 'little') for char in log[:max_length]]  # UTF-8 encoding
+        if len(encoded) < max_length:
+            encoded += [0] * (max_length - len(encoded))  # Pad to max length
+        processed_logs.append(encoded)
+    return processed_logs
 
+def preprocess_logs(logs, batch_size=100000):
     num_cores = cpu_count()
     print(f"Using {num_cores} cores for preprocessing...")
     with Pool(num_cores) as pool:
@@ -171,6 +177,7 @@ if __name__ == "__main__":
     parser.add_argument("--folder", required=True, help="Path to the folder containing DLT files.")
     parser.add_argument("--output_model", default="minibatch_isolation_forest_model.pkl", help="Path to save the trained model.")
     parser.add_argument("--use-PyTorch", action="store_true", help="Use PyTorch-based model for training.")
+    parser.add_argument("--keywords", nargs='+', default=['error', 'fail', 'fatal'], help="Keywords to filter logs. Default: ['error', 'fail', 'fatal']")
     args = parser.parse_args()
 
     # Step 1: Find all DLT files
@@ -185,9 +192,9 @@ if __name__ == "__main__":
         print(f"No DLT files found in the folder '{args.folder}'. Please check if the folder contains valid '.dlt' files or if the path is correct.")
         exit(1)
 
-    # Step 2: Parse DLT files in parallel
+    # Step 2: Parse DLT files in parallel with filtering
     print("Parsing DLT files in parallel...")
-    all_logs = parse_dlt_files_in_parallel(dlt_files)
+    all_logs = parse_dlt_files_in_parallel(dlt_files, filter_keywords=args.keywords)
 
     if not all_logs:
         print("No logs extracted from DLT files. Exiting.")
