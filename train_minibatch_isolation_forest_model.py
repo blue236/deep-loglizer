@@ -4,6 +4,7 @@
 import os
 import numpy as np
 from sklearn.ensemble import IsolationForest
+from sklearn.metrics import classification_report
 import joblib
 import argparse
 import pydlt
@@ -88,15 +89,10 @@ class AnomalyDetectionModel(nn.Module):
     def __init__(self, input_size):
         super(AnomalyDetectionModel, self).__init__()
         self.encoder = nn.Sequential(
-            nn.Linear(input_size, 128),
-            nn.ReLU(),
-            nn.Linear(128, 64),
-            nn.ReLU()
+            nn.ReLU(), nn.Linear(input_size, 128)
         )
         self.decoder = nn.Sequential(
-            nn.Linear(64, 128),
-            nn.ReLU(),
-            nn.Linear(128, input_size)
+            nn.ReLU(), nn.Linear(128, input_size)
         )
 
     def forward(self, x):
@@ -104,24 +100,44 @@ class AnomalyDetectionModel(nn.Module):
         decoded = self.decoder(encoded)
         return decoded
 
-def train_model_pytorch(model, data_loader, criterion, optimizer, epochs=10):
-    print("Training the PyTorch model...")
-    model.train()
-    for epoch in range(epochs):
-        epoch_loss = 0
-        for batch in data_loader:
-            inputs = batch
-            optimizer.zero_grad()
-            outputs = model(inputs)
-            loss = criterion(outputs, inputs)
-            loss.backward()
-            optimizer.step()
-            epoch_loss += loss.item()
-        print(f"Epoch [{epoch+1}/{epochs}], Loss: {epoch_loss/len(data_loader):.4f}")
-    return model
+    def train_model(self, data_loader, criterion, optimizer, epochs=10, checkpoint_path=None):
+        print("Training the PyTorch model...")
+        self.train()
+        for epoch in range(epochs):
+            epoch_loss = 0
+            for batch in data_loader:
+                inputs = batch
+                optimizer.zero_grad()
+                outputs = self(inputs)
+                loss = criterion(outputs, inputs)
+                loss.backward()
+                optimizer.step()
+                epoch_loss += loss.item()
+
+            print(f"Epoch [{epoch+1}/{epochs}], Loss: {epoch_loss/len(data_loader):.4f}")
+
+            # Save checkpoint after every epoch
+            if checkpoint_path:
+                torch.save(self.state_dict(), f"{checkpoint_path}_epoch{epoch+1}.pth")
+                print(f"Checkpoint saved at {checkpoint_path}_epoch{epoch+1}.pth")
+        return self
+
+    def validate_model(self, validation_data_loader, criterion):
+        print("Validating the PyTorch model...")
+        self.eval()
+        total_loss = 0
+        with torch.no_grad():
+            for batch in validation_data_loader:
+                inputs = batch
+                outputs = self(inputs)
+                loss = criterion(outputs, inputs)
+                total_loss += loss.item()
+        avg_loss = total_loss / len(validation_data_loader)
+        print(f"Validation Loss: {avg_loss:.4f}")
+        return avg_loss
 
 # Sklearn-based Isolation Forest model
-def train_model_sklearn(model, data):
+def train_model_sklearn(model, data, validation_data=None):
     print("Configuring the Isolation Forest model...")
     max_estimators = 50000 # Define a reasonable upper limit for n_estimators
     if model.n_estimators + 10 > max_estimators:
@@ -130,6 +146,15 @@ def train_model_sklearn(model, data):
         model.set_params(n_estimators=model.n_estimators + 10) # Increment trees to fit new data
     print("Training or updating the Isolation Forest model...")
     model.fit(data)
+
+    if validation_data is not None:
+        print("Validating the model...")
+        predictions = model.predict(validation_data)
+        anomaly_labels = predictions == -1  # Convert Isolation Forest output to boolean anomalies
+        normal_count = np.sum(~anomaly_labels)
+        anomaly_count = np.sum(anomaly_labels)
+        print(f"Validation Results: {normal_count} normal logs, {anomaly_count} anomalies detected.")
+
     return model
 
 # Save the model to a file
@@ -177,7 +202,8 @@ if __name__ == "__main__":
     parser.add_argument("--folder", required=True, help="Path to the folder containing DLT files.")
     parser.add_argument("--output_model", default="minibatch_isolation_forest_model.pkl", help="Path to save the trained model.")
     parser.add_argument("--use-PyTorch", action="store_true", help="Use PyTorch-based model for training.")
-    parser.add_argument("--keywords", nargs='+', default=['error', 'fail', 'fatal'], help="Keywords to filter logs. Default: ['error', 'fail', 'fatal']")
+    parser.add_argument("--checkpoint", default=None, help="Path to save intermediate model checkpoints.")
+    parser.add_argument("--validation-size", type=int, default=1000, help="Number of samples for validation.")
     args = parser.parse_args()
 
     # Step 1: Find all DLT files
@@ -192,33 +218,42 @@ if __name__ == "__main__":
         print(f"No DLT files found in the folder '{args.folder}'. Please check if the folder contains valid '.dlt' files or if the path is correct.")
         exit(1)
 
-    # Step 2: Parse DLT files in parallel with filtering
+    # Step 2: Parse DLT files in parallel
     print("Parsing DLT files in parallel...")
-    all_logs = parse_dlt_files_in_parallel(dlt_files, filter_keywords=args.keywords)
+    all_logs = parse_dlt_files_in_parallel(dlt_files)
 
     if not all_logs:
         print("No logs extracted from DLT files. Exiting.")
         exit(1)
 
-    # Load or initialize the model
-    input_size = len(all_logs[0]) if all_logs else 255  # Assume 255 if logs are empty
-    model = load_model(args.output_model, args.use_PyTorch, input_size=input_size)
-
     # Step 3: Preprocess logs in batches with multi-processing
     print("Preprocessing logs...")
-    total_batches = (len(all_logs) + 99999) // 100000
-    for batch_index, log_batch in enumerate(preprocess_logs(all_logs), start=1):
-        print(f"Processing batch {batch_index}/{total_batches}...")
-        if args.use_PyTorch:
-            data_loader = torch.utils.data.DataLoader(torch.tensor(log_batch, dtype=torch.float32), batch_size=32, shuffle=True)
-            criterion = nn.MSELoss()
-            optimizer = optim.Adam(model.parameters(), lr=0.001)
-            model = train_model_pytorch(model, data_loader, criterion, optimizer)
-        else:
-            model = train_model_sklearn(model, log_batch)
+    processed_logs = []
+    for batch in preprocess_logs(all_logs):
+        processed_logs.extend(batch)
 
-    # Save the trained or updated model
+    processed_logs = np.array(processed_logs)
+    validation_logs = processed_logs[:args.validation_size]
+    training_logs = processed_logs[args.validation_size:]
+
+    # Step 4: Load or initialize the model
+    input_size = len(training_logs[0]) if training_logs else 255
+    model = load_model(args.output_model, args.use_PyTorch, input_size=input_size)
+
+    if args.use_PyTorch:
+        print("Training PyTorch model...")
+        data_loader = torch.utils.data.DataLoader(torch.tensor(training_logs, dtype=torch.float32), batch_size=32, shuffle=True)
+        validation_loader = torch.utils.data.DataLoader(torch.tensor(validation_logs, dtype=torch.float32), batch_size=32, shuffle=False)
+        criterion = nn.MSELoss()
+        optimizer = optim.Adam(model.parameters(), lr=0.001)
+        model.train_model(data_loader, criterion, optimizer, checkpoint_path=args.checkpoint)
+        model.validate_model(validation_loader, criterion)
+    else:
+        print("Training Isolation Forest model...")
+        model = train_model_sklearn(model, training_logs, validation_data=validation_logs)
+
+    # Step 5: Save the trained or updated model
     save_model(model, args.output_model, use_pytorch=args.use_PyTorch)
 
-    # Display the model overview
-    display_model_overview(model, args.use_pytorch=args.use_PyTorch)
+    # Step 6: Display the model overview
+    display_model_overview(model, use_pytorch=args.use_PyTorch)
