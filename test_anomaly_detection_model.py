@@ -8,6 +8,7 @@ import argparse
 import pydlt
 import torch
 from sklearn.metrics import classification_report
+import re
 
 # Function to parse a DLT file and extract log messages
 def parse_dlt_file(file_path):
@@ -25,6 +26,8 @@ def preprocess_logs(logs):
     max_length = 255  # Maximum length of log vectors
     processed_logs = []
     for log in logs:
+        # Replace all numbers in the log with <*>
+        log = re.sub(r'\d+', '<*>', log)
         encoded = [ord(char) for char in log[:max_length]]  # Simple character encoding
         if len(encoded) < max_length:
             encoded += [0] * (max_length - len(encoded))  # Pad to max length

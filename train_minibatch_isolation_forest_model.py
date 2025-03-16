@@ -12,6 +12,7 @@ from multiprocessing import Pool, cpu_count
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import re
 
 # Function to recursively find DLT files in a folder
 def find_dlt_files(folder_path):
@@ -71,6 +72,8 @@ def process_batch(batch_logs):
     max_length = 255
     processed_logs = []
     for log in batch_logs:
+        # Replace all numbers in the log with <*>
+        log = re.sub(r'\d+', '<*>', log)
         encoded = [int.from_bytes(char.encode('utf-8'), 'little') for char in log[:max_length]]  # UTF-8 encoding
         if len(encoded) < max_length:
             encoded += [0] * (max_length - len(encoded))  # Pad to max length
